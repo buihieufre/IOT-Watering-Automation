@@ -1,15 +1,16 @@
 import { getDb } from "./mongodb";
-import { Collection } from "mongodb";
+import { Collection, ObjectId } from "mongodb";
 
 // MongoDB Collections
 export interface SystemState {
+  _id?: ObjectId;
   key: string;
   value: any;
   updated_at: Date;
 }
 
 export interface WateringSchedule {
-  _id?: string;
+  _id?: ObjectId;
   hour: number;
   minute: number;
   enabled: boolean;
@@ -18,7 +19,7 @@ export interface WateringSchedule {
 }
 
 export interface SensorLog {
-  _id?: string;
+  _id?: ObjectId;
   humidity: number;
   analog_value: number;
   timestamp: number;
@@ -26,7 +27,7 @@ export interface SensorLog {
 }
 
 export interface StatusLog {
-  _id?: string;
+  _id?: ObjectId;
   pump_status: boolean;
   threshold: number;
   watering_duration: number;
