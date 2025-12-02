@@ -1,69 +1,45 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getCollections } from "@/lib/db-mongodb";
 
 // Runtime config cho Vercel
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Lazy load db để tránh lỗi khi deploy
-let db: any = null;
-async function getDb() {
-  if (!db) {
-    const dbModule = await import("@/lib/db");
-    db = dbModule.default;
-  }
-  return db;
-}
-
 export async function GET(request: NextRequest) {
   try {
-    const database = await getDb();
+    const { sensorLogs } = await getCollections();
     const { searchParams } = new URL(request.url);
     const limit = parseInt(searchParams.get("limit") || "100");
     const offset = parseInt(searchParams.get("offset") || "0");
     const startTime = searchParams.get("startTime");
     const endTime = searchParams.get("endTime");
 
-    let query = "SELECT * FROM sensor_logs";
-    const conditions: string[] = [];
-    const params: any[] = [];
-
+    const query: any = {};
     if (startTime) {
-      conditions.push("timestamp >= ?");
-      params.push(parseInt(startTime));
+      query.timestamp = { ...query.timestamp, $gte: parseInt(startTime) };
     }
-
     if (endTime) {
-      conditions.push("timestamp <= ?");
-      params.push(parseInt(endTime));
+      query.timestamp = { ...query.timestamp, $lte: parseInt(endTime) };
     }
 
-    if (conditions.length > 0) {
-      query += " WHERE " + conditions.join(" AND ");
-    }
+    const logs = await sensorLogs
+      .find(query)
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .skip(offset)
+      .toArray();
 
-    query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?";
-    params.push(limit, offset);
-
-    const logs = database.prepare(query).all(...params) as Array<{
-      id: number;
-      humidity: number;
-      analog_value: number;
-      timestamp: number;
-      created_at: string;
-    }>;
-
-    // Đếm tổng số records
-    let countQuery = "SELECT COUNT(*) as total FROM sensor_logs";
-    if (conditions.length > 0) {
-      countQuery += " WHERE " + conditions.join(" AND ");
-    }
-    const countResult = database.prepare(countQuery).get(...params.slice(0, -2)) as {
-      total: number;
-    };
+    const total = await sensorLogs.countDocuments(query);
 
     return NextResponse.json({
-      logs,
-      total: countResult.total,
+      logs: logs.map((log) => ({
+        id: log._id?.toString(),
+        humidity: log.humidity,
+        analog_value: log.analog_value,
+        timestamp: log.timestamp,
+        created_at: log.created_at,
+      })),
+      total,
       limit,
       offset,
     });
@@ -75,7 +51,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const database = await getDb();
+    const { sensorLogs } = await getCollections();
     const body = await request.json();
     const { humidity, analog_value, timestamp } = body;
 
@@ -90,15 +66,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const insert = database.prepare(
-      "INSERT INTO sensor_logs (humidity, analog_value, timestamp) VALUES (?, ?, ?)"
-    );
-
-    const result = insert.run(humidity, analog_value, timestamp);
+    const result = await sensorLogs.insertOne({
+      humidity,
+      analog_value,
+      timestamp,
+      created_at: new Date(),
+    });
 
     return NextResponse.json({
       success: true,
-      id: result.lastInsertRowid,
+      id: result.insertedId.toString(),
     });
   } catch (error: any) {
     console.error("POST /api/logs/sensor error:", error);

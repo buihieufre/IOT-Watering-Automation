@@ -1,97 +1,62 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getCollections } from "@/lib/db-mongodb";
 
 // Runtime config cho Vercel
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Lazy load db để tránh lỗi khi deploy
-let db: any = null;
-async function getDb() {
-  if (!db) {
-    const dbModule = await import("@/lib/db");
-    db = dbModule.default;
-  }
-  return db;
-}
-
 export async function GET(request: NextRequest) {
   try {
-    const database = await getDb();
+    const { statusLogs } = await getCollections();
     const { searchParams } = new URL(request.url);
     const limit = parseInt(searchParams.get("limit") || "100");
     const offset = parseInt(searchParams.get("offset") || "0");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
 
-    let query = "SELECT * FROM status_logs";
-    const conditions: string[] = [];
-    const params: any[] = [];
-
+    const query: any = {};
     if (startDate) {
-      conditions.push("created_at >= ?");
-      params.push(startDate);
+      query.created_at = { ...query.created_at, $gte: new Date(startDate) };
     }
-
     if (endDate) {
-      conditions.push("created_at <= ?");
-      params.push(endDate);
+      query.created_at = { ...query.created_at, $lte: new Date(endDate) };
     }
 
-    if (conditions.length > 0) {
-      query += " WHERE " + conditions.join(" AND ");
-    }
+    const logs = await statusLogs
+      .find(query)
+      .sort({ created_at: -1 })
+      .limit(limit)
+      .skip(offset)
+      .toArray();
 
-    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?";
-    params.push(limit, offset);
-
-    const logs = database.prepare(query).all(...params) as Array<{
-      id: number;
-      pump_status: number;
-      threshold: number;
-      watering_duration: number;
-      auto_mode: number;
-      is_raining: number;
-      delayed_watering_enabled: number;
-      delayed_watering_hours: number;
-      delayed_watering_minutes: number;
-      created_at: string;
-    }>;
-
-    // Đếm tổng số records
-    let countQuery = "SELECT COUNT(*) as total FROM status_logs";
-    if (conditions.length > 0) {
-      countQuery += " WHERE " + conditions.join(" AND ");
-    }
-    const countResult = database
-      .prepare(countQuery)
-      .get(...params.slice(0, -2)) as { total: number };
-
-    // Convert boolean values từ SQLite (0/1) sang boolean
-    const formattedLogs = logs.map((log) => ({
-      ...log,
-      pump_status: Boolean(log.pump_status),
-      auto_mode: Boolean(log.auto_mode),
-      is_raining: Boolean(log.is_raining),
-      delayed_watering_enabled: Boolean(log.delayed_watering_enabled),
-    }));
+    const total = await statusLogs.countDocuments(query);
 
     return NextResponse.json({
-      logs: formattedLogs,
-      total: countResult.total,
+      logs: logs.map((log) => ({
+        id: log._id?.toString(),
+        pump_status: log.pump_status,
+        threshold: log.threshold,
+        watering_duration: log.watering_duration,
+        auto_mode: log.auto_mode,
+        is_raining: log.is_raining,
+        delayed_watering_enabled: log.delayed_watering_enabled,
+        delayed_watering_hours: log.delayed_watering_hours,
+        delayed_watering_minutes: log.delayed_watering_minutes,
+        created_at: log.created_at,
+      })),
+      total,
       limit,
       offset,
     });
   } catch (error: any) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: 500 }
-    );
+    console.error("GET /api/logs/status error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const database = await getDb();
+    const { statusLogs } = await getCollections();
     const body = await request.json();
     const {
       pump_status,
@@ -120,33 +85,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const insert = database.prepare(
-      `INSERT INTO status_logs (
-        pump_status, threshold, watering_duration, auto_mode, is_raining,
-        delayed_watering_enabled, delayed_watering_hours, delayed_watering_minutes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    );
-
-    const result = insert.run(
-      pump_status ? 1 : 0,
+    const result = await statusLogs.insertOne({
+      pump_status: Boolean(pump_status),
       threshold,
       watering_duration,
-      auto_mode ? 1 : 0,
-      is_raining ? 1 : 0,
-      delayed_watering_enabled ? 1 : 0,
-      delayed_watering_hours || 0,
-      delayed_watering_minutes || 0
-    );
+      auto_mode: Boolean(auto_mode),
+      is_raining: Boolean(is_raining),
+      delayed_watering_enabled: Boolean(delayed_watering_enabled || false),
+      delayed_watering_hours: delayed_watering_hours || 0,
+      delayed_watering_minutes: delayed_watering_minutes || 0,
+      created_at: new Date(),
+    });
 
     return NextResponse.json({
       success: true,
-      id: result.lastInsertRowid,
+      id: result.insertedId.toString(),
     });
   } catch (error: any) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: 500 }
-    );
+    console.error("POST /api/logs/status error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
-

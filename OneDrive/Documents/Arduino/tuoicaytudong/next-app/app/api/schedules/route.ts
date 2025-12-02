@@ -1,37 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
-import db from "@/lib/db";
+import { getCollections } from "@/lib/db-mongodb";
+
+// Runtime config cho Vercel
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const schedules = db
-      .prepare(
-        "SELECT id, hour, minute, enabled FROM watering_schedules ORDER BY hour, minute"
-      )
-      .all() as Array<{
-      id: number;
-      hour: number;
-      minute: number;
-      enabled: boolean;
-    }>;
+    const { schedules } = await getCollections();
+    const schedulesList = await schedules
+      .find({})
+      .sort({ hour: 1, minute: 1 })
+      .toArray();
 
     return NextResponse.json(
-      schedules.map((s) => ({
-        id: s.id,
+      schedulesList.map((s) => ({
+        id: s._id?.toString(),
         hour: s.hour,
         minute: s.minute,
-        enabled: Boolean(s.enabled),
+        enabled: s.enabled,
       }))
     );
   } catch (error: any) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: 500 }
-    );
+    console.error("GET /api/schedules error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
+    const { schedules } = await getCollections();
     const body = await request.json();
     const { hour, minute, enabled = true } = body;
 
@@ -42,28 +40,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = db
-      .prepare(
-        "INSERT INTO watering_schedules (hour, minute, enabled) VALUES (?, ?, ?) RETURNING id, hour, minute, enabled"
-      )
-      .get(hour, minute, enabled ? 1 : 0) as {
-      id: number;
-      hour: number;
-      minute: number;
-      enabled: number;
-    };
+    const result = await schedules.insertOne({
+      hour,
+      minute,
+      enabled,
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
 
     return NextResponse.json({
-      id: result.id,
-      hour: result.hour,
-      minute: result.minute,
-      enabled: Boolean(result.enabled),
+      id: result.insertedId.toString(),
+      hour,
+      minute,
+      enabled,
     });
   } catch (error: any) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: 500 }
-    );
+    console.error("POST /api/schedules error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
-

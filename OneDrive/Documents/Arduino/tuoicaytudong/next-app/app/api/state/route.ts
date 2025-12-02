@@ -1,57 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
-import db from "@/lib/db";
+import { getCollections } from "@/lib/db-mongodb";
+
+// Runtime config cho Vercel
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    // Lấy trạng thái hệ thống từ bảng system_state
-    const stateRows = db
-      .prepare("SELECT key, value FROM system_state")
-      .all() as Array<{ key: string; value: string }>;
+    const { systemState, schedules } = await getCollections();
 
+    // Lấy trạng thái hệ thống
+    const stateRows = await systemState.find({}).toArray();
     const state: Record<string, any> = {};
     stateRows.forEach((row) => {
-      try {
-        state[row.key] = JSON.parse(row.value);
-      } catch {
-        state[row.key] = row.value;
-      }
+      state[row.key] = row.value;
     });
 
     // Lấy danh sách lịch tưới
-    const schedules = db
-      .prepare(
-        "SELECT id, hour, minute, enabled FROM watering_schedules ORDER BY hour, minute"
-      )
-      .all() as Array<{
-      id: number;
-      hour: number;
-      minute: number;
-      enabled: boolean;
-    }>;
+    const schedulesList = await schedules
+      .find({})
+      .sort({ hour: 1, minute: 1 })
+      .toArray();
 
     return NextResponse.json({
       ...state,
-      schedules: schedules.map((s) => ({
-        id: s.id,
+      schedules: schedulesList.map((s) => ({
+        id: s._id?.toString(),
         hour: s.hour,
         minute: s.minute,
-        enabled: Boolean(s.enabled),
+        enabled: s.enabled,
       })),
     });
   } catch (error: any) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: 500 }
-    );
+    console.error("GET /api/state error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
 export async function POST(request: NextRequest) {
   try {
+    const { systemState } = await getCollections();
     const body = await request.json();
-    const insert = db.prepare(
-      "INSERT OR REPLACE INTO system_state (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)"
-    );
 
     const keys = [
       "pumpStatus",
@@ -65,22 +54,30 @@ export async function POST(request: NextRequest) {
       "delayedWateringMinutes",
     ];
 
-    const transaction = db.transaction(() => {
-      keys.forEach((key) => {
-        if (body[key] !== undefined) {
-          insert.run(key, JSON.stringify(body[key]));
-        }
-      });
-    });
+    // Update hoặc insert từng key
+    const operations = keys
+      .filter((key) => body[key] !== undefined)
+      .map((key) => ({
+        updateOne: {
+          filter: { key },
+          update: {
+            $set: {
+              key,
+              value: body[key],
+              updated_at: new Date(),
+            },
+          },
+          upsert: true,
+        },
+      }));
 
-    transaction();
+    if (operations.length > 0) {
+      await systemState.bulkWrite(operations);
+    }
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
-    return NextResponse.json(
-      { error: error.message },
-      { status: 500 }
-    );
+    console.error("POST /api/state error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
-
